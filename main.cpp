@@ -136,6 +136,66 @@ static void keyboard_callback(const viz::KeyboardEvent &event, void* cookie)
     camera_pov = !camera_pov;
 }
 
+void matches_2_tracks( const vector< vector< KeyPoint >> &_keypoints, 
+                       const vector< vector< DMatch >> &_matches,
+                       std::vector<Mat> &points2d )
+{
+    size_t n_frames = _keypoints.size();
+    size_t n_tracks = 0;
+    
+    
+    vector< vector< Vec2d > > tracks;
+    
+    for ( size_t i = 0; i < _matches.size(); i++ )
+    {
+        vector< Vec2d > track;
+        if ( _matches.at(i).size() ) 
+        {
+            
+        }
+        else
+        {
+            track.push_back( Vec2d(-1) );
+        }
+            
+    }
+    
+    
+    for ( size_t i = 0; i < n_frames; ++i )
+    {
+        Mat_< double > frame(2, n_tracks);
+        
+        for (size_t j = 0; j < size_t(n_tracks); ++j)
+        {
+            frame(0,int(j)) = tracks[j][i][0];
+            frame(1,int(j)) = tracks[j][i][1];
+        }
+        points2d.push_back( Mat( frame ) );
+    }
+}
+
+vector< DMatch > filtration_matches( const vector< DMatch > &_matches, float _threshold = -1 )
+{
+    // --- Find min and max value of match distance
+    float max_dist = 0, min_dist = 1000;
+    for ( auto j : _matches )
+    {
+        float dist = j.distance;
+        if( dist < min_dist ) min_dist = dist;
+        if( dist > max_dist ) max_dist = dist;
+    }
+    
+    // --- Filtration by threshold
+    vector< DMatch > tempMatches;
+    float threshold;
+    if ( _threshold < 0 ) threshold = 10 * min_dist;
+    else threshold = _threshold;
+    for ( auto j : _matches )
+        if ( j.distance < threshold )
+            tempMatches.push_back( j );
+    
+    return tempMatches;
+}
 
 // --- --- MAIN --- --- ---------------------------------------------------- //
 int main(int argc, char** argv)
@@ -149,8 +209,10 @@ int main(int argc, char** argv)
         exit(0);
     }
     
-    // --- Read input parameters
+    // --- Read input parameters --- and temp parameters --- !!!
     string path = argv[1];
+    bool filtrationMatches = true;
+    
         // Read path of folder with img files
     cout << " --- Read path of folder with img files ... ";
     vector< string > imgPath[3];
@@ -169,7 +231,7 @@ int main(int argc, char** argv)
     // --- Find keypoints and them features
     cout << " --- Find keypoints and them features ... ";
     Ptr< SIFT > detectorSIFT = SIFT::create( 0, 3, 0.04, 10, 1.6 );     // 0, 4, 0.04, 10, 1.6
-    vector< vector< KeyPoint >> keypoints;                              // Key points
+    vector< vector< KeyPoint > > keypoints;                              // Key points
     vector< Mat > descriptors;                                          // Descriptors key points
     for ( size_t i = 0; i < imgPath[1].size(); i++ )
     {
@@ -186,28 +248,32 @@ int main(int argc, char** argv)
     
     // --- Matching keypoints by them descriptions
     cout << " --- Matching keypoints by them descriptions ... ";
-    vector< vector< DMatch >> matches;
+    vector< vector< DMatch > > matches;
     for( size_t i = 0; i < descriptors.size() - 1; i++ )
     {
         vector< DMatch > tempMatches;
         Ptr< DescriptorMatcher > matcher = DescriptorMatcher::create( DescriptorMatcher::BRUTEFORCE );
         matcher->match( descriptors.at(i), descriptors.at(i+1), tempMatches );
         for ( auto &j : tempMatches ) j.imgIdx = int(i);
-        matches.push_back( tempMatches );
+        
+            // Filtration matches
+//        if ( filtrationMatches ) matches.push_back( filtration_matches( tempMatches, 100 ) );
+//        else matches.push_back( tempMatches );
+        matches.push_back( filtrationMatches ? filtration_matches( tempMatches, 100 ) : tempMatches );
     }
     cout << "[DONE]" << endl;
     
+    // --- Converting keypoints tracks to reconstruction api format
+    std::vector< Mat > points2d;
+    matches_2_tracks( keypoints, matches, points2d );
     
     
     
-    // Read 2D points from text file
-    std::vector<Mat> points2d;
-    parser_2D_tracks( argv[1], points2d );
     
     /// Reconstruct the scene using the 2d correspondences
     
     bool is_projective = true;
-    vector<Mat> Rs_est, ts_est, points3d_estimated;
+    vector< Mat > Rs_est, ts_est, points3d_estimated;
     reconstruct(points2d, Rs_est, ts_est, K, points3d_estimated, is_projective);
     
     // Print output
