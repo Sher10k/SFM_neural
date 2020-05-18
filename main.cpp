@@ -1,6 +1,8 @@
 // /home/roman/SFM/1_trajectory_test/desktop_tracks.txt 1914 640 360
 // /home/roman/SFM/1_trajectory_test/backyard_tracks.txt 1914 640 360
-// /home/roman/SFM/data/ 720 512 360
+// /home/roman/SFM/data/ 720 512 360    // My
+// /home/roman/SFM/data/ 350 240 360    // Sagrada Familia
+// /home/roman/SFM/data/ 800 400 225    // кусок камня 
 
 // STD
 #include <iostream>
@@ -28,9 +30,10 @@ using namespace std;
 using namespace cv;
 using namespace cv::sfm;
 using namespace cv::xfeatures2d;
-//using namespace Eigen;
+using namespace Eigen;
 using namespace open3d;
 
+#define EXAMPLE 0
 
 static void help() {
   cout
@@ -73,6 +76,175 @@ static void help() {
  *  values will be (-1,-1).
  */
 
+#if EXAMPLE == 0
+struct Track
+{
+    Track()
+    {
+        begin = -1;
+        now = -1;
+        trainIdx = -1;
+        end = -1;
+    }
+    Track( Point2f _p1, Point2f _p2, int _b = -1, int _n = -1, int _ti = -1, int _e = -1 )
+        : begin(_b), now(_n), trainIdx(_ti), end(_e)
+    {
+        points.push_back( _p1 );
+        points.push_back( _p2 );
+    }
+    
+    int begin;
+    int now;
+    int trainIdx;
+    int end;
+    vector< Point2f > points;
+};
+
+void matches_2_tracks( const vector< vector< KeyPoint >> &_keypoints, 
+                       vector< vector< DMatch >> _matches,
+                       std::vector<Mat> &points2d )
+{
+    size_t n_frames = _keypoints.size();
+    size_t n_tracks = 0;
+    size_t sum = 0;
+    
+    //vector< vector< Vec2d > > tracks;
+    vector< Track > tracks;
+    
+    for ( size_t i = 0; i < _matches.size(); i++ )
+    {
+        sum += _matches.at(i).size();
+        if ( _matches.at(i).size() ) 
+        {
+            if ( !tracks.empty() )
+            {
+                for ( Track &k : tracks )
+                {
+                    for ( auto &j : _matches.at(i) )
+                    {
+                            // Проверяем соответствия между треками и связями
+                        if ( (j.imgIdx >= 0) &&             // --- возможно можно просто строго >
+                             (k.end == int(i)) && 
+                             (j.queryIdx == k.trainIdx) )
+                        {
+                            k.points.push_back( _keypoints.at(i+1).at( size_t(j.trainIdx) ).pt );
+                            k.trainIdx = j.trainIdx;
+                            k.now++;
+                            k.end++;
+                            j.imgIdx = -1;
+                        }
+                    }
+                        // Треки которым не нашлось продолжения
+                    if ( k.now == int(i) )  
+                    {
+                        k.points.push_back( Point2f(-1, -1) );
+                        k.now++;
+                    }
+                }
+                    // Добавляем новые треки
+                for ( auto &j : _matches.at(i) )
+                {
+                    if ( j.imgIdx > 0)
+                    {
+                        tracks.push_back( Track( _keypoints.at(i).at( size_t(j.queryIdx) ).pt,
+                                                 _keypoints.at(i+1).at( size_t(j.trainIdx) ).pt,
+                                                 int(i), int(i+1), j.trainIdx, int(i+1) ) );
+                        j.imgIdx = -1;
+                    }
+                }
+            }
+            else    // --- если первая итерация или каждром ранне не было ключевых точек
+            {
+                for ( auto &j : _matches.at(i) )
+                {
+                    tracks.push_back( Track( _keypoints.at(i).at( size_t(j.queryIdx) ).pt,
+                                             _keypoints.at(i+1).at( size_t(j.trainIdx) ).pt,
+                                             int(i), int(i+1), j.trainIdx, int(i+1) ) );
+                    j.imgIdx = -1;
+                }
+            }
+        }
+        else
+        {
+            for ( Track &k : tracks )
+            {
+                k.points.push_back( Point2f(-1, -1) );
+                k.now++;
+            }
+        }
+    }
+    n_tracks = tracks.size();
+    
+    
+    vector< vector< Vec2d > > tracksV;
+    for ( size_t j = 0; j < n_tracks; j++ )
+    {
+        vector< Vec2d > track;
+        for ( size_t i = 0; i < n_frames; i++ )
+        {
+            if ( tracks.at(j).begin <= int(i) )
+            {
+                float x = tracks.at(j).points.at( i - size_t(tracks.at(j).begin) ).x;
+                float y = tracks.at(j).points.at( i - size_t(tracks.at(j).begin) ).y;
+                if ( (x > 0) && (y > 0) )
+                  track.push_back( Vec2d( double(x), double(y) ) );
+                else
+                  track.push_back( Vec2d(-1,-1) );
+            }
+            else
+                track.push_back( Vec2d(-1,-1) );
+        }
+        tracksV.push_back(track);
+    }
+    // --- Save 3d points to file
+    std::ofstream out;
+    out.open("3d_cloud.txt");
+    for ( auto track : tracksV )
+    {
+        for ( auto point : track )
+            out << point;
+        out << "\n";
+    }
+    out.close();
+    
+    for ( size_t i = 0; i < n_frames; ++i )
+    {
+        Mat_< double > frame( 2, int(n_tracks) );
+        
+        for ( size_t j = 0; j < n_tracks; ++j )
+        {
+            frame(0,int(j)) = tracksV[j][i][0];
+            frame(1,int(j)) = tracksV[j][i][1];
+        }
+        points2d.push_back( Mat( frame ) );
+    }
+}
+
+vector< DMatch > filtration_matches( const vector< DMatch > &_matches, float _threshold = -1 )
+{
+    // --- Find min and max value of match distance
+    float max_dist = 0, min_dist = 1000;
+    for ( auto j : _matches )
+    {
+        float dist = j.distance;
+        if( dist < min_dist ) min_dist = dist;
+        if( dist > max_dist ) max_dist = dist;
+    }
+    
+    // --- Filtration by threshold
+    vector< DMatch > tempMatches;
+    float threshold;
+    if ( _threshold < 0 ) threshold = 10 * min_dist;
+    else threshold = _threshold;
+    for ( auto j : _matches )
+        if ( j.distance < threshold )
+            tempMatches.push_back( j );
+    
+    return tempMatches;
+}
+
+#else
+// --- Example --- //
 static void parser_2D_tracks(const String &_filename, std::vector<Mat> &points2d )
 {
   ifstream myfile(_filename.c_str());
@@ -124,78 +296,13 @@ static void parser_2D_tracks(const String &_filename, std::vector<Mat> &points2d
   }
 
 }
-
-/* Keyboard callback to control 3D visualization
- */
-
-static bool camera_pov = false;
-
+bool camera_pov = false;
 static void keyboard_callback(const viz::KeyboardEvent &event, void* cookie)
 {
   if ( event.action == 0 &&!event.symbol.compare("s") )
     camera_pov = !camera_pov;
 }
-
-void matches_2_tracks( const vector< vector< KeyPoint >> &_keypoints, 
-                       const vector< vector< DMatch >> &_matches,
-                       std::vector<Mat> &points2d )
-{
-    size_t n_frames = _keypoints.size();
-    size_t n_tracks = 0;
-    
-    
-    vector< vector< Vec2d > > tracks;
-    
-    for ( size_t i = 0; i < _matches.size(); i++ )
-    {
-        vector< Vec2d > track;
-        if ( _matches.at(i).size() ) 
-        {
-            
-        }
-        else
-        {
-            track.push_back( Vec2d(-1) );
-        }
-            
-    }
-    
-    
-    for ( size_t i = 0; i < n_frames; ++i )
-    {
-        Mat_< double > frame(2, n_tracks);
-        
-        for (size_t j = 0; j < size_t(n_tracks); ++j)
-        {
-            frame(0,int(j)) = tracks[j][i][0];
-            frame(1,int(j)) = tracks[j][i][1];
-        }
-        points2d.push_back( Mat( frame ) );
-    }
-}
-
-vector< DMatch > filtration_matches( const vector< DMatch > &_matches, float _threshold = -1 )
-{
-    // --- Find min and max value of match distance
-    float max_dist = 0, min_dist = 1000;
-    for ( auto j : _matches )
-    {
-        float dist = j.distance;
-        if( dist < min_dist ) min_dist = dist;
-        if( dist > max_dist ) max_dist = dist;
-    }
-    
-    // --- Filtration by threshold
-    vector< DMatch > tempMatches;
-    float threshold;
-    if ( _threshold < 0 ) threshold = 10 * min_dist;
-    else threshold = _threshold;
-    for ( auto j : _matches )
-        if ( j.distance < threshold )
-            tempMatches.push_back( j );
-    
-    return tempMatches;
-}
+#endif
 
 // --- --- MAIN --- --- ---------------------------------------------------- //
 int main(int argc, char** argv)
@@ -209,16 +316,26 @@ int main(int argc, char** argv)
         exit(0);
     }
     
+#if EXAMPLE == 0
     // --- Read input parameters --- and temp parameters --- !!!
     string path = argv[1];
+    bool filtrationMask = true;
     bool filtrationMatches = true;
     
         // Read path of folder with img files
     cout << " --- Read path of folder with img files ... ";
-    vector< string > imgPath[3];
-    glob( path + "depth_img_bgr/*.png", imgPath[0] );
-    glob( path + "rgb_img_bgr/*.png", imgPath[1] );
-    glob( path + "sem_img_bgr/*.png", imgPath[2] );
+    vector< string > imgPath[4];
+//    glob( path + "depth_img_bgr/*.png", imgPath[0] );
+//    glob( path + "rgb_img_bgr/*.png", imgPath[1] );
+//    glob( path + "bin_mask/*.png", imgPath[2] );
+//    glob( path + "sem_img_bgr/*.png", imgPath[3] );
+
+//    glob( path + "depth_img_temp/*.png", imgPath[0] );
+    glob( path + "rgb_img_temp/*.png", imgPath[1] );
+    glob( path + "bin_mask_temp/*.png", imgPath[2] );
+//    glob( path + "sem_img_temp/*.png", imgPath[3] );
+    
+//    glob( path + "rgb_img_temp/*", imgPath[1] );
     cout << "[DONE]" << endl;
         // Set the camera calibration matrix
     const double f  = atof(argv[2]), 
@@ -227,11 +344,39 @@ int main(int argc, char** argv)
     Matx33d K = Matx33d( f, 0, cx,
                          0, f, cy,
                          0, 0,  1);
+/*   
+//    for ( size_t i = 0; i < imgPath[2].size(); i++ )
+//    {
+//        Mat tempSem = imread( imgPath[2].at(i), IMREAD_COLOR );
+//        Mat building, fence, other, pole, roadLine, road, sidewalk, wall, trafficSign;
+//        inRange( tempSem, Vec3b(70, 70, 70), Vec3b(70, 70, 70), building );
+//        inRange( tempSem, Vec3b(153, 153, 190), Vec3b(153, 153, 190), fence );
+//        inRange( tempSem, Vec3b(160, 170, 250), Vec3b(160, 170, 250), other );
+//        inRange( tempSem, Vec3b(153, 153, 153), Vec3b(153, 153, 153), pole );
+//        inRange( tempSem, Vec3b(50, 234, 157), Vec3b(50, 234, 157), roadLine );
+//        inRange( tempSem, Vec3b(128, 64, 128), Vec3b(128, 64, 128), road );
+//        inRange( tempSem, Vec3b(232, 35, 244), Vec3b(232, 35, 244), sidewalk );
+//        inRange( tempSem, Vec3b(156, 102, 102), Vec3b(156, 102, 102), wall );
+//        inRange( tempSem, Vec3b(0, 220, 220), Vec3b(0, 220, 220), trafficSign );
+//        Mat temp = Mat::zeros( tempSem.size(), CV_8U );
+//        bitwise_or( temp, building, temp, noArray() );
+//        bitwise_or( temp, fence, temp, noArray() );
+//        bitwise_or( temp, other, temp, noArray() );
+//        bitwise_or( temp, pole, temp, noArray() );
+//        bitwise_or( temp, roadLine, temp, noArray() );
+//        bitwise_or( temp, road, temp, noArray() );
+//        bitwise_or( temp, sidewalk, temp, noArray() );
+//        bitwise_or( temp, wall, temp, noArray() );
+//        bitwise_or( temp, trafficSign, temp, noArray() );
+//        imwrite( "bin_mask/mask_0" + to_string(i) + ".png", temp );
+//    }
+*/
     
     // --- Find keypoints and them features
-    cout << " --- Find keypoints and them features ... ";
-    Ptr< SIFT > detectorSIFT = SIFT::create( 0, 3, 0.04, 10, 1.6 );     // 0, 4, 0.04, 10, 1.6
-    vector< vector< KeyPoint > > keypoints;                              // Key points
+    cout << " --- Find keypoints and them features ... " << " ";
+    //Ptr< SIFT > detector = SIFT::create( 0, 4, 0.04, 10, 1.6 );     // 0, 3, 0.04, 10, 1.6
+    Ptr< SURF > detector = SURF::create( 100, 4, 4, true, false );         // 100, 4, 3, false, false
+    vector< vector< KeyPoint > > keypoints;                             // Key points
     vector< Mat > descriptors;                                          // Descriptors key points
     for ( size_t i = 0; i < imgPath[1].size(); i++ )
     {
@@ -239,15 +384,17 @@ int main(int argc, char** argv)
         Mat tempFrame = imread( imgPath[1].at(i), IMREAD_COLOR );
         vector< KeyPoint > tempKeypoints;
         Mat tempDescriptors;
-        detectorSIFT->detectAndCompute( tempFrame, noArray(), tempKeypoints, 
-                                        tempDescriptors, false );       // <- Here we can apply a mask --- !!!
+        detector->detectAndCompute( tempFrame, 
+                                    filtrationMask ? imread( imgPath[2].at(i), IMREAD_GRAYSCALE ) : noArray(), 
+                                    tempKeypoints, 
+                                    tempDescriptors, false );
         keypoints.push_back( tempKeypoints );
         descriptors.push_back( tempDescriptors );
     }
     cout << "[DONE]" << endl;
     
     // --- Matching keypoints by them descriptions
-    cout << " --- Matching keypoints by them descriptions ... ";
+    cout << " --- Matching keypoints by them descriptions ... " << " ";
     vector< vector< DMatch > > matches;
     for( size_t i = 0; i < descriptors.size() - 1; i++ )
     {
@@ -259,25 +406,35 @@ int main(int argc, char** argv)
             // Filtration matches
 //        if ( filtrationMatches ) matches.push_back( filtration_matches( tempMatches, 100 ) );
 //        else matches.push_back( tempMatches );
-        matches.push_back( filtrationMatches ? filtration_matches( tempMatches, 100 ) : tempMatches );
+        matches.push_back( filtrationMatches ? filtration_matches( tempMatches, 0.1f ) : tempMatches );   //0.35f
     }
     cout << "[DONE]" << endl;
     
     // --- Converting keypoints tracks to reconstruction api format
+    cout << " --- Converting keypoints tracks to reconstruction api format ... " << " ";
     std::vector< Mat > points2d;
     matches_2_tracks( keypoints, matches, points2d );
+    cout << "[DONE]" << endl;
+    
+#else
+    std::vector< Mat > points2d;
+    parser_2D_tracks( argv[1], points2d );
+    const double f  = atof(argv[2]),
+                 cx = atof(argv[3]), cy = atof(argv[4]);
+    Matx33d K = Matx33d( f, 0, cx,
+                         0, f, cy,
+                         0, 0,  1);
+#endif
     
     
-    
-    
-    /// Reconstruct the scene using the 2d correspondences
-    
+    // --- Reconstruct the scene using the 2d correspondences
+    cout << " --- Reconstruct the scene using the 2d correspondences ... " << " ";
     bool is_projective = true;
     vector< Mat > Rs_est, ts_est, points3d_estimated;
-    reconstruct(points2d, Rs_est, ts_est, K, points3d_estimated, is_projective);
+    reconstruct( points2d, Rs_est, ts_est, K, points3d_estimated, is_projective );
+    cout << "[DONE]" << endl;
     
-    // Print output
-    
+    // --- Print output
     cout << "\n----------------------------\n" << endl;
     cout << "Reconstruction: " << endl;
     cout << "============================" << endl;
@@ -288,87 +445,143 @@ int main(int argc, char** argv)
     cout << "3D Visualization: " << endl;
     cout << "============================" << endl;
     
+    // --- 3D visialisation
+    visualization::Visualizer vis;
+    vis.CreateVisualizerWindow( "Open3D", 1600, 900, 50, 50 );
+        // Add Coordinate
+    auto coord = geometry::TriangleMesh::CreateCoordinateFrame( 0.3, Vector3d( 0.0, 0.0, 0.0 ) );
+    coord->ComputeVertexNormals();
+    vis.AddGeometry( coord );
     
-    /// Create 3D windows
-    viz::Viz3d window_est("Estimation Coordinate Frame");
-    window_est.setBackgroundColor(); // black by default
-    window_est.registerKeyboardCallback(&keyboard_callback);
-    
-    // Create the pointcloud
-    cout << "Recovering points  ... ";
-    
-    // recover estimated points3d
-    vector<Vec3f> point_cloud_est;
-    for (size_t i = 0; i < points3d_estimated.size(); ++i)
-        point_cloud_est.push_back(Vec3f(points3d_estimated[i]));
-    
-    cout << "[DONE]" << endl;
-    
-    
-    /// Recovering cameras
-    cout << "Recovering cameras ... ";
-    
-    vector<Affine3d> path_est;
-    for (size_t i = 0; i < Rs_est.size(); ++i)
-        path_est.push_back(Affine3d(Rs_est[i],ts_est[i]));
-    
-    cout << "[DONE]" << endl;
-    
-    /// Add cameras
-    cout << "Rendering Trajectory  ... ";
-    
-    /// Wait for key 'q' to close the window
-    cout << endl << "Press:                       " << endl;
-    cout <<         " 's' to switch the camera pov" << endl;
-    cout <<         " 'q' to close the windows    " << endl;
-    
-    
-    if ( path_est.size() > 0 )
+        // points3d to cloud for visialisation
+    auto cloud = make_shared< geometry::PointCloud >();
+    double box = 30;
+    for ( Mat point3d : points3d_estimated )
     {
-        // animated trajectory
-        int idx = 0, forw = -1, n = static_cast<int>(path_est.size());
-        
-        while(!window_est.wasStopped())
+        if ( (point3d.at< double >(0,0) > -box) && (point3d.at< double >(0,0) < box) &&
+             (point3d.at< double >(1,0) > -box) && (point3d.at< double >(1,0) < box) &&
+             (point3d.at< double >(2,0) > -box) && (point3d.at< double >(2,0) < box) )
         {
-            /// Render points as 3D cubes
-            for (size_t i = 0; i < point_cloud_est.size(); ++i)
-            {
-                Vec3d point = point_cloud_est[i];
-                Affine3d point_pose(Mat::eye(3,3,CV_64F), point);
-                
-                char buffer[50];
-                sprintf (buffer, "%d", static_cast<int>(i));
-                
-                viz::WCube cube_widget(Point3f(0.1f,0.1f,0.0f), Point3f(0.0,0.0,-0.1f), true, viz::Color::blue());
-                cube_widget.setRenderingProperty(viz::LINE_WIDTH, 2.0);
-                window_est.showWidget("Cube"+String(buffer), cube_widget, point_pose);
-            }
-            
-            Affine3d cam_pose = path_est[ size_t(idx) ];
-            
-            viz::WCameraPosition cpw(0.25); // Coordinate axes
-            viz::WCameraPosition cpw_frustum(K, 0.3, viz::Color::yellow()); // Camera frustum
-            
-            if ( camera_pov )
-                window_est.setViewerPose(cam_pose);
-            else
-            {
-                // render complete trajectory
-                window_est.showWidget("cameras_frames_and_lines_est", viz::WTrajectory(path_est, viz::WTrajectory::PATH, 1.0, viz::Color::green()));
-                
-                window_est.showWidget("CPW", cpw, cam_pose);
-                window_est.showWidget("CPW_FRUSTUM", cpw_frustum, cam_pose);
-            }
-            
-            // update trajectory index (spring effect)
-            forw *= (idx==n || idx==0) ? -1: 1; idx += forw;
-            
-            // frame rate 1s
-            window_est.spinOnce(1, true);
-            window_est.removeAllWidgets();
+            Vector3d temPoint, tempColor;
+            temPoint.x() = point3d.at< double >(0,0);
+            temPoint.y() = point3d.at< double >(1,0);
+            temPoint.z() = point3d.at< double >(2,0);
+            tempColor.x() = 1.0;
+            tempColor.y() = 0.0;
+            tempColor.z() = 0.0;
+            cloud->points_.push_back( temPoint );
+            cloud->colors_.push_back( tempColor );
         }
-        
     }
+        // Recovering cameras
+    cout << " --- Recovering cameras ... " << " ";
+    vector< cv::Affine3d > path_est;
+    auto cloud_coord = make_shared< geometry::PointCloud >();
+    for ( size_t i = 0; i < Rs_est.size(); ++i )
+    {
+        cv::Affine3d affine = cv::Affine3d(Rs_est[i],ts_est[i]);
+        path_est.push_back( affine );
+        
+        Vector3d tempPoint = Vector3d( affine.matrix.val[3], 
+                                       affine.matrix.val[7] ,
+                                       affine.matrix.val[11]);
+        Vector3d tempColor = Vector3d(0.0, 0.0 ,1.0);
+        
+        cloud_coord->points_.push_back( tempPoint );
+        cloud_coord->colors_.push_back( tempColor );
+    }
+    vis.AddGeometry( cloud_coord );
+    cout << "[DONE]" << endl;
+    
+        // Add Point cloud
+    vis.AddGeometry( cloud );
+        // Start visualization
+    vis.Run();
+    
+    
+    
+/*    
+//    /// Create 3D windows
+//    viz::Viz3d window_est("Estimation Coordinate Frame");
+//    window_est.setBackgroundColor(); // black by default
+//    window_est.registerKeyboardCallback(&keyboard_callback);
+    
+//    // Create the pointcloud
+//    cout << "Recovering points  ... ";
+    
+//    // recover estimated points3d
+//    vector<Vec3f> point_cloud_est;
+//    for (size_t i = 0; i < points3d_estimated.size(); ++i)
+//        point_cloud_est.push_back(Vec3f(points3d_estimated[i]));
+    
+//    cout << "[DONE]" << endl;
+    
+    
+//    /// Recovering cameras
+//    cout << "Recovering cameras ... ";
+    
+//    vector< cv::Affine3d > path_est;
+//    for (size_t i = 0; i < Rs_est.size(); ++i)
+//        path_est.push_back( cv::Affine3d(Rs_est[i],ts_est[i]) );
+    
+//    cout << "[DONE]" << endl;
+    
+//    /// Add cameras
+//    cout << "Rendering Trajectory  ... ";
+    
+//    /// Wait for key 'q' to close the window
+//    cout << endl << "Press:                       " << endl;
+//    cout <<         " 's' to switch the camera pov" << endl;
+//    cout <<         " 'q' to close the windows    " << endl;
+    
+    
+//    if ( path_est.size() > 0 )
+//    {
+//        // animated trajectory
+//        int idx = 0, forw = -1, n = static_cast<int>(path_est.size());
+        
+//        while(!window_est.wasStopped())
+//        {
+//            /// Render points as 3D cubes
+//            for (size_t i = 0; i < point_cloud_est.size(); ++i)
+//            {
+//                Vec3d point = point_cloud_est[i];
+//                cv::Affine3d point_pose(Mat::eye(3,3,CV_64F), point);
+                
+//                char buffer[50];
+//                sprintf (buffer, "%d", static_cast<int>(i));
+                
+//                viz::WCube cube_widget(Point3f(0.1f,0.1f,0.0f), Point3f(0.0,0.0,-0.1f), true, viz::Color::blue());
+//                cube_widget.setRenderingProperty(viz::LINE_WIDTH, 2.0);
+//                window_est.showWidget("Cube"+String(buffer), cube_widget, point_pose);
+//            }
+            
+//            cv::Affine3d cam_pose = path_est[ size_t(idx) ];
+            
+//            viz::WCameraPosition cpw(0.25); // Coordinate axes
+//            viz::WCameraPosition cpw_frustum(K, 0.3, viz::Color::yellow()); // Camera frustum
+            
+//            if ( camera_pov )
+//                window_est.setViewerPose(cam_pose);
+//            else
+//            {
+//                // render complete trajectory
+//                window_est.showWidget("cameras_frames_and_lines_est", viz::WTrajectory(path_est, viz::WTrajectory::PATH, 1.0, viz::Color::green()));
+                
+//                window_est.showWidget("CPW", cpw, cam_pose);
+//                window_est.showWidget("CPW_FRUSTUM", cpw_frustum, cam_pose);
+//            }
+            
+//            // update trajectory index (spring effect)
+//            forw *= (idx==n || idx==0) ? -1: 1; idx += forw;
+            
+//            // frame rate 1s
+//            window_est.spinOnce(1, true);
+//            window_est.removeAllWidgets();
+//        }
+        
+//    }
+*/
     
     return 0;
 }
