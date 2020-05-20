@@ -3,6 +3,8 @@
 // /home/roman/SFM/data/ 720 512 360    // My
 // /home/roman/SFM/data/ 350 240 360    // Sagrada Familia
 // /home/roman/SFM/data/ 800 400 225    // кусок камня 
+// /home/roman/SFM/2_scene_reconstruction/images4/dataset_files2.txt 720 512 360  // для 2го примера
+// /home/roman/SFM/2_scene_reconstruction/images4/dataset_files3.txt 720 512 360 /home/roman/SFM/2_scene_reconstruction/images4/dataset_files4_1.txt
 
 // STD
 #include <iostream>
@@ -33,7 +35,7 @@ using namespace cv::xfeatures2d;
 using namespace Eigen;
 using namespace open3d;
 
-#define EXAMPLE 0
+#define EXAMPLE 2
 
 static void help() {
   cout
@@ -243,7 +245,7 @@ vector< DMatch > filtration_matches( const vector< DMatch > &_matches, float _th
     return tempMatches;
 }
 
-#else
+#elif EXAMPLE == 1
 // --- Example --- //
 static void parser_2D_tracks(const String &_filename, std::vector<Mat> &points2d )
 {
@@ -302,6 +304,24 @@ static void keyboard_callback(const viz::KeyboardEvent &event, void* cookie)
   if ( event.action == 0 &&!event.symbol.compare("s") )
     camera_pov = !camera_pov;
 }
+#elif EXAMPLE == 2
+static int getdir(const string _filename, vector<String> &files)
+{
+    ifstream myfile( _filename.c_str() );
+    if ( !myfile.is_open() )
+    {
+        cout << "Unable to read file: " << _filename << endl;
+        exit(0);
+    } 
+    else 
+    {
+        size_t found = _filename.find_last_of("/\\");
+        string line_str, path_to_file = _filename.substr(0, found);
+        while ( getline(myfile, line_str) )
+            files.push_back( path_to_file + string("/") + line_str );
+    }
+    return 1;
+}
 #endif
 
 // --- --- MAIN --- --- ---------------------------------------------------- //
@@ -310,17 +330,17 @@ int main(int argc, char** argv)
     //std::cout << cv::getBuildInformation() << std::endl;
     
     // --- Checking number of input parameters
-    if ( argc != 5 )
+    if ( argc != 6 )
     {
         help();
         exit(0);
     }
+    bool filtrationMask = true;
+    bool filtrationMatches = true;
     
 #if EXAMPLE == 0
     // --- Read input parameters --- and temp parameters --- !!!
     string path = argv[1];
-    bool filtrationMask = true;
-    bool filtrationMatches = true;
     
         // Read path of folder with img files
     cout << " --- Read path of folder with img files ... ";
@@ -416,9 +436,35 @@ int main(int argc, char** argv)
     matches_2_tracks( keypoints, matches, points2d );
     cout << "[DONE]" << endl;
     
-#else
+#elif EXAMPLE == 1
     std::vector< Mat > points2d;
     parser_2D_tracks( argv[1], points2d );
+    const double f  = atof(argv[2]),
+                 cx = atof(argv[3]), cy = atof(argv[4]);
+    Matx33d K = Matx33d( f, 0, cx,
+                         0, f, cy,
+                         0, 0,  1);
+#elif EXAMPLE == 2
+    vector< String > points2d, points2d_2;
+    getdir( argv[1], points2d );
+    getdir( argv[5], points2d_2 );
+//    vector< string > maskPath;
+//    glob( "/home/roman/SFM/2_scene_reconstruction/images4/bin_mask/*.png", maskPath );
+    
+//    for ( size_t i = 0; i < points2d.size(); i++ )
+//    {
+//        Mat tempMask = imread( maskPath.at(i), IMREAD_COLOR );
+//        Mat tempFrame = imread( points2d.at(i), IMREAD_COLOR );
+//        Mat temp = Mat::zeros( tempFrame.size(), CV_8UC3 );
+//        bitwise_and( tempFrame, tempMask, temp, noArray() );
+//        size_t leni = to_string(i).length();
+//        if ( leni == 1 )
+//            imwrite( "/home/roman/SFM/2_scene_reconstruction/images4/add_bin_mask/img3mask_000" + to_string(i) + ".png", temp );
+//        if ( leni == 2 )
+//            imwrite( "/home/roman/SFM/2_scene_reconstruction/images4/add_bin_mask/img3mask_00" + to_string(i) + ".png", temp );
+//        if ( leni == 3 )
+//            imwrite( "/home/roman/SFM/2_scene_reconstruction/images4/add_bin_mask/img3mask_0" + to_string(i) + ".png", temp );
+//    }
     const double f  = atof(argv[2]),
                  cx = atof(argv[3]), cy = atof(argv[4]);
     Matx33d K = Matx33d( f, 0, cx,
@@ -436,10 +482,24 @@ int main(int argc, char** argv)
     
     // --- Print output
     cout << "\n----------------------------\n" << endl;
-    cout << "Reconstruction: " << endl;
+    cout << "Reconstruction blue: " << endl;
     cout << "============================" << endl;
     cout << "Estimated 3D points: " << points3d_estimated.size() << endl;
     cout << "Estimated cameras: " << Rs_est.size() << endl;
+    cout << "Refined intrinsics: " << endl << K << endl << endl;
+    
+    cout << "3D Visualization: " << endl;
+    cout << "============================" << endl;
+    
+    vector< Mat > Rs_est_2, ts_est_2, points3d_estimated_2;
+    reconstruct( points2d_2, Rs_est_2, ts_est_2, K, points3d_estimated_2, is_projective );
+    
+    // --- Print output
+    cout << "\n----------------------------\n" << endl;
+    cout << "Reconstruction_2 with mask grean: " << endl;
+    cout << "============================" << endl;
+    cout << "Estimated 3D points: " << points3d_estimated_2.size() << endl;
+    cout << "Estimated cameras: " << Rs_est_2.size() << endl;
     cout << "Refined intrinsics: " << endl << K << endl << endl;
     
     cout << "3D Visualization: " << endl;
@@ -462,39 +522,137 @@ int main(int argc, char** argv)
              (point3d.at< double >(1,0) > -box) && (point3d.at< double >(1,0) < box) &&
              (point3d.at< double >(2,0) > -box) && (point3d.at< double >(2,0) < box) )
         {
-            Vector3d temPoint, tempColor;
+            Vector3d temPoint;
             temPoint.x() = point3d.at< double >(0,0);
             temPoint.y() = point3d.at< double >(1,0);
             temPoint.z() = point3d.at< double >(2,0);
-            tempColor.x() = 1.0;
-            tempColor.y() = 0.0;
-            tempColor.z() = 0.0;
+            Vector3d tempColor = Vector3d(1.0, 0.0 ,1.0);
             cloud->points_.push_back( temPoint );
             cloud->colors_.push_back( tempColor );
         }
     }
+    
+    auto cloud_2 = make_shared< geometry::PointCloud >();
+    for ( Mat point3d : points3d_estimated_2 )
+    {
+        if ( (point3d.at< double >(0,0) > -box) && (point3d.at< double >(0,0) < box) &&
+             (point3d.at< double >(1,0) > -box) && (point3d.at< double >(1,0) < box) &&
+             (point3d.at< double >(2,0) > -box) && (point3d.at< double >(2,0) < box) )
+        {
+            Vector3d temPoint;
+            temPoint.x() = point3d.at< double >(0,0);
+            temPoint.y() = point3d.at< double >(1,0);
+            temPoint.z() = point3d.at< double >(2,0);
+            Vector3d tempColor = Vector3d(1.0, 1.0 ,0.0);
+            cloud_2->points_.push_back( temPoint );
+            cloud_2->colors_.push_back( tempColor );
+        }
+    }
+    
         // Recovering cameras
     cout << " --- Recovering cameras ... " << " ";
     vector< cv::Affine3d > path_est;
     auto cloud_coord = make_shared< geometry::PointCloud >();
     for ( size_t i = 0; i < Rs_est.size(); ++i )
     {
-        cv::Affine3d affine = cv::Affine3d(Rs_est[i],ts_est[i]);
+        cv::Affine3d affine = cv::Affine3d(Rs_est[i], ts_est[i]);
         path_est.push_back( affine );
         
+        cout << i << " : " << affine.matrix.val[11] << endl;
         Vector3d tempPoint = Vector3d( affine.matrix.val[3], 
-                                       affine.matrix.val[7] ,
+                                       affine.matrix.val[7],
                                        affine.matrix.val[11]);
         Vector3d tempColor = Vector3d(0.0, 0.0 ,1.0);
         
         cloud_coord->points_.push_back( tempPoint );
         cloud_coord->colors_.push_back( tempColor );
     }
-    vis.AddGeometry( cloud_coord );
-    cout << "[DONE]" << endl;
-    
-        // Add Point cloud
+    auto cloud_line = make_shared< geometry::LineSet >();
+    cloud_line->points_.push_back( cloud_coord->points_.front() );
+    for ( size_t i = 0; i < Rs_est.size()-1; ++i )
+    {
+        Vector3d tempPoint = cloud_coord->points_.at(i+1);
+        cloud_line->points_.push_back( tempPoint );
+        cloud_line->lines_.push_back( Vector2i(i, i+1) );
+        cloud_line->colors_.push_back( Vector3d(0.0, 0.0 ,0.0) );
+    }
+    vis.AddGeometry( cloud_line );
+//    cloud->Transform( Matrix4d( path_est.at(13).matrix.t().val ) );
+//    cloud_coord->Transform( Matrix4d( path_est.at(13).matrix.t().val ) );
     vis.AddGeometry( cloud );
+    vis.AddGeometry( cloud_coord );
+    
+    cout << "mask: " << endl;
+    vector< cv::Affine3d > path_est_2;
+    auto cloud_coord_2 = make_shared< geometry::PointCloud >();
+    for ( size_t i = 0; i < Rs_est_2.size(); ++i )
+    {
+        cv::Affine3d affine = cv::Affine3d(Rs_est_2[i], ts_est_2[i]);
+        path_est_2.push_back( affine );
+        
+        cout << i << " : " << affine.matrix.val[11] << endl;
+        Vector3d tempPoint = Vector3d( affine.matrix.val[3], 
+                                       affine.matrix.val[7],
+                                       affine.matrix.val[11]);
+        Vector3d tempColor = Vector3d(0.0, 1.0 ,0.0);
+        
+        cloud_coord_2->points_.push_back( tempPoint );
+        cloud_coord_2->colors_.push_back( tempColor );
+    }
+    auto cloud_line_2 = make_shared< geometry::LineSet >();
+    cloud_line_2->points_.push_back( cloud_coord_2->points_.front() );
+    for ( size_t i = 0; i < Rs_est_2.size()-1; ++i )
+    {
+        Vector3d tempPoint = cloud_coord_2->points_.at(i+1);
+        cloud_line_2->points_.push_back( tempPoint );
+        cloud_line_2->lines_.push_back( Vector2i(i, i+1) );
+        cloud_line_2->colors_.push_back( Vector3d(0.0, 0.0 ,0.0) );
+    }
+    vis.AddGeometry( cloud_line_2 );
+//    cloud_2->Transform( Matrix4d( path_est_2.at(1).matrix.t().val ) );
+//    cloud_coord_2->Transform( Matrix4d( path_est_2.at(1).matrix.t().val ) );
+    vis.AddGeometry( cloud_coord_2 );
+    vis.AddGeometry( cloud_2 );
+    cout << "[DONE]" << endl;    
+    
+    // --- Расчет СКО
+    // Расчет откланений каждой камеры от прямой oZ
+    vector< double > dxsquare, dxsquare_2;
+    double srnum = 0, srnum_2 = 0;
+    for ( auto pos : path_est )
+    {
+        double temp = sqrt( (pos.matrix.val[3] * pos.matrix.val[3]) + 
+                            (pos.matrix.val[7] * pos.matrix.val[7]) );
+        dxsquare.push_back( temp );
+        srnum += temp;
+    }
+    for ( auto pos : path_est_2 )
+    {
+        double temp = sqrt( (pos.matrix.val[3] * pos.matrix.val[3]) + 
+                            (pos.matrix.val[7] * pos.matrix.val[7]) );
+        dxsquare_2.push_back( temp );
+        srnum_2 += temp;
+    }
+    // Среднее значение откланений от прямой
+    srnum /= dxsquare.size();
+    srnum_2 /= dxsquare_2.size();
+    double sco = 0, sco_2 = 0;
+    for ( auto dx : dxsquare )
+    {
+        sco += (dx - srnum) * (dx - srnum);
+    }
+    for ( auto dx : dxsquare_2 )
+    {
+        sco_2 += (dx - srnum_2) * (dx - srnum_2);
+    }
+    sco /= dxsquare.size();
+    sco_2 /= dxsquare_2.size();
+    sco = sqrt( sco );
+    sco_2 = sqrt( sco_2 );
+    cout << "SCO: \t\t" << sco << endl;
+    cout << "SCO_2 mask: \t" << sco_2 << endl;
+    
+    
         // Start visualization
     vis.Run();
     
